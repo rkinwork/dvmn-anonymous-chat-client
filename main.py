@@ -2,6 +2,7 @@ from datetime import datetime
 import asyncio
 
 import gui
+from utils import setup_config
 
 
 async def generate_messages(messages_queue: asyncio.Queue):
@@ -12,6 +13,7 @@ async def generate_messages(messages_queue: asyncio.Queue):
 
 
 async def main():
+    conf = setup_config()
     messages_queue = asyncio.Queue()
     sending_queue = asyncio.Queue()
     status_updates_queue = asyncio.Queue()
