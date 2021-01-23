@@ -1,5 +1,6 @@
 import sys
 import contextlib
+import datetime
 
 import asyncio
 import configargparse
@@ -21,9 +22,12 @@ def setup_config():
     p.add_argument('-p', '--port', help='port of the chat server', env_var='DVMN_SEND_PORT',
                    default=DEFAULT_SEND_SERVER_PORT)
     p.add_argument('-d', '--debug', help='switch on debug mode', env_var='DVMN_DEBUG', action='store_true')
+    p.add_argument('-f', '--filepath', help='path to the file where to store chat history',
+                   env_var='DVMN_CHAT_PATH', default=DEFAULT_HISTORY_FILE)
     group = p.add_mutually_exclusive_group()
     group.add_argument('-t', '--token', help='authorization token', env_var='DVMN_AUTH_TOKEN')
     group.add_argument('-n', '--nickname', help='name of the new user')
+
     return p.parse_args()
 
 
