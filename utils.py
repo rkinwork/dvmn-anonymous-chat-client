@@ -31,11 +31,16 @@ def decode_message(message):
     return message.decode('utf-8').strip()
 
 
+async def dummy_message_writer(msg):
+    await asyncio.sleep(0)
+
+
 @contextlib.asynccontextmanager
-async def open_connection(server, port, message_writer):
+async def open_connection(server, port, message_writer=None):
     attempt = 0
     connected = False
     reader, writer = None, None
+    message_writer = message_writer or dummy_message_writer
     while True:
         try:
             reader, writer = await asyncio.open_connection(server, port)
