@@ -8,6 +8,7 @@ import asyncio
 import configargparse
 from aiofiles.os import wrap as aiowrap
 import aiofiles
+import gui
 
 DEFAULT_LOG_DESCRIPTOR = aiowrap(sys.stdout.write)
 LOG_DTTM_TMPL = '%d-%m-%y %H:%M:%S'
@@ -44,7 +45,7 @@ def setup_config():
     return p.parse_args()
 
 
-async def authorise(token, reader, writer):
+async def authorise(token, reader, writer, status_updates_queue: asyncio.Queue):
     await a_log_debug(decode_message(await reader.readline()))
     writer.write(f"{token}\n".encode())
     response = json.loads(await reader.readline())
@@ -52,7 +53,10 @@ async def authorise(token, reader, writer):
         await a_log_error("Unknown token. Check it, or register new user")
         return False
     await a_log_debug(response)
-    await a_log_debug(f"Выполнена авторизация. Пользователь {response.get('nickname', 'None')}.")
+    nickname = response.get('nickname')
+    if nickname:
+        status_updates_queue.put_nowait(gui.NicknameReceived(response.get('nickname')))
+    await a_log_debug(f"Выполнена авторизация. Пользователь {nickname}.")
     return True
 
 
@@ -60,9 +64,14 @@ def decode_message(message):
     return message.decode('utf-8').strip()
 
 
-async def read_msgs(host: str, port: str, message_queue: asyncio.Queue, save_message_queue: asyncio.Queue):
+async def read_msgs(host: str,
+                    port: str,
+                    message_queue: asyncio.Queue,
+                    save_message_queue: asyncio.Queue,
+                    status_updates_queue: asyncio.Queue,
+                    ):
     while True:
-        async with open_connection(host, port) as rw:
+        async with open_connection(host, port, status_updates_queue, gui.ReadConnectionStateChanged) as rw:
             reader, *_ = rw
             while True:
                 row = await reader.readline()
@@ -75,10 +84,15 @@ async def read_msgs(host: str, port: str, message_queue: asyncio.Queue, save_mes
         await asyncio.sleep(ATTEMPT_DELAY_SECS)
 
 
-async def send_msgs(host: str, port: str, token: str, sending_queue: asyncio.Queue):
-    async with open_connection(host, port) as rw:
+async def send_msgs(host: str,
+                    port: str,
+                    token: str,
+                    sending_queue: asyncio.Queue,
+                    status_updates_queue: asyncio.Queue,
+                    ):
+    async with open_connection(host, port, status_updates_queue, gui.SendingConnectionStateChanged) as rw:
         reader, writer = rw
-        if await authorise(token, reader, writer):
+        if await authorise(token, reader, writer, status_updates_queue):
             auth_response = decode_message(await reader.readline())
             await a_log_debug(auth_response)
         else:
@@ -111,15 +125,17 @@ async def dummy_message_writer(msg):
 
 
 @contextlib.asynccontextmanager
-async def open_connection(server, port, message_writer=None):
+async def open_connection(server: str, port: str, status_updates_queue: asyncio.Queue, state_enum):
     attempt = 0
     connected = False
     reader, writer = None, None
-    message_writer = message_writer or dummy_message_writer
+    status_updates_queue.put_nowait(state_enum.INITIATED)
     while True:
         try:
             reader, writer = await asyncio.open_connection(server, port)
-            await message_writer("Соединение установлено")
+            status_updates_queue.put_nowait(state_enum.ESTABLISHED)
+            # TODO расширить enum что бы не дублировать сообщения
+            await a_log_debug("Соединение установлено")
             connected = True
             yield reader, writer
             break
@@ -129,17 +145,19 @@ async def open_connection(server, port, message_writer=None):
 
         except (ConnectionRefusedError, ConnectionResetError):
             if connected:
-                await message_writer("Соединение было разорвано")
+                status_updates_queue.put_nowait(state_enum.CLOSED)
+                await a_log_debug("Соединение было разорвано")
                 break
             if attempt >= ATTEMPTS_BEFORE_DELAY:
-                await message_writer(f"Нет соединения. Повторная попытка через {ATTEMPT_DELAY_SECS} сек.")
+                await a_log_debug(f"Нет соединения. Повторная попытка через {ATTEMPT_DELAY_SECS} сек.")
                 await asyncio.sleep(ATTEMPT_DELAY_SECS)
                 continue
             attempt += 1
-            await message_writer(f"Нет соединения. Повторная попытка.")
+            await a_log_debug(f"Нет соединения. Повторная попытка.")
 
         finally:
             if all((reader, writer)):
                 writer.close()
                 await writer.wait_closed()
-            await message_writer("Соединение закрыто")
+            status_updates_queue.put_nowait(state_enum.CLOSED)
+            await a_log_debug("Соединение закрыто")
