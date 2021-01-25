@@ -1,4 +1,5 @@
 import tkinter as tk
+from tkinter import messagebox
 import asyncio
 from tkinter.scrolledtext import ScrolledText
 from enum import Enum
@@ -131,3 +132,7 @@ async def draw(messages_queue, sending_queue, status_updates_queue):
         update_conversation_history(conversation_panel, messages_queue),
         update_status_panel(status_labels, status_updates_queue)
     )
+
+
+def show_token_error():
+    messagebox.showinfo("Неверный токен", "Проверьте токен, сервер его не узнал.")

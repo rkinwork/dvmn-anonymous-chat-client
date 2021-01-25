@@ -2,7 +2,7 @@ import asyncio
 import logging
 
 import gui
-from utils import setup_config, load_chat_history, save_messages, read_msgs, send_msgs
+from utils import setup_config, load_chat_history, save_messages, read_msgs, send_msgs, InvalidToken
 
 
 async def main():
@@ -16,11 +16,17 @@ async def main():
         logging.basicConfig(level=logging.DEBUG)
 
     load_chat_history(conf.filepath, messages_queue)
-    await asyncio.gather(gui.draw(messages_queue, sending_queue, status_updates_queue),
-                         save_messages(conf.filepath, save_message_queue),
-                         read_msgs(conf.host, conf.lport, messages_queue, save_message_queue),
-                         send_msgs(conf.host, conf.port, conf.token, sending_queue),
-                         )
+    coros_to_gather = [gui.draw(messages_queue, sending_queue, status_updates_queue),
+                       save_messages(conf.filepath, save_message_queue),
+                       read_msgs(conf.host, conf.lport, messages_queue, save_message_queue),
+                       send_msgs(conf.host, conf.port, conf.token, sending_queue),
+                       ]
+    tasks_to_gather = [asyncio.create_task(coro) for coro in coros_to_gather]
+    try:
+        await asyncio.gather(*tasks_to_gather)
+    except InvalidToken:
+        [task.cancel() for task in tasks_to_gather]
+        gui.show_token_error()
 
 
 if __name__ == '__main__':

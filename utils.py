@@ -23,6 +23,10 @@ a_log_debug = aiowrap(logging.debug)
 a_log_error = aiowrap(logging.error)
 
 
+class InvalidToken(Exception):
+    pass
+
+
 def setup_config():
     p = configargparse.ArgParser(default_config_files=['conf.ini'])
     p.add_argument('-u', '--host', help='host of the chat server', env_var='DVMN_HOST', default=DEFAULT_SERVER_HOST)
@@ -79,8 +83,7 @@ async def send_msgs(host: str, port: str, token: str, sending_queue: asyncio.Que
             await a_log_debug(auth_response)
         else:
             await a_log_error('Problems with authorization. Check your token')
-            # TODO надо завершать исполнение программы если авторизация не прошла в начале
-            return
+            raise InvalidToken('Problems with authorization. Check your token')
 
         while True:
             message = await sending_queue.get()
