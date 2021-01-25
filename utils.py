@@ -2,6 +2,7 @@ import sys
 import contextlib
 import json
 import logging
+import re
 
 import asyncio
 import configargparse
@@ -16,6 +17,7 @@ DEFAULT_SERVER_HOST = 'minechat.dvmn.org'
 DEFAULT_LISTEN_SERVER_PORT = 5000
 DEFAULT_SEND_SERVER_PORT = 5050
 DEFAULT_HISTORY_FILE = 'minechat.history'
+ESCAPE_MESSAGE_PATTERN = re.compile('\n+')
 
 a_log_debug = aiowrap(logging.debug)
 a_log_error = aiowrap(logging.error)
@@ -81,8 +83,11 @@ async def send_msgs(host: str, port: str, token: str, sending_queue: asyncio.Que
             return
 
         while True:
-            msg = await sending_queue.get()
-            await a_log_debug(f'Пользователь написал: {msg}')
+            message = await sending_queue.get()
+            message = ESCAPE_MESSAGE_PATTERN.sub('\n', message)  # remove new lines
+            writer.write(f"{message}\n\n".encode())
+            await a_log_debug(message)
+            await a_log_debug(decode_message(await reader.readline()))
 
 
 async def save_messages(filepath, queue: asyncio.Queue):
