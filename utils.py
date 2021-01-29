@@ -1,16 +1,14 @@
-import sys
 import contextlib
 import json
 import logging
 import re
+from enum import Enum
 
 import asyncio
 import configargparse
-from aiofiles.os import wrap as aiowrap
 import aiofiles
 import gui
 
-DEFAULT_LOG_DESCRIPTOR = aiowrap(sys.stdout.write)
 LOG_DTTM_TMPL = '%d-%m-%y %H:%M:%S'
 ATTEMPT_DELAY_SECS = 3
 ATTEMPTS_BEFORE_DELAY = 2
@@ -19,13 +17,27 @@ DEFAULT_LISTEN_SERVER_PORT = 5000
 DEFAULT_SEND_SERVER_PORT = 5050
 DEFAULT_HISTORY_FILE = 'minechat.history'
 ESCAPE_MESSAGE_PATTERN = re.compile('\n+')
+WATCHDOG_TEMPLATE = 'Connection is alive. {msg}'
 
-a_log_debug = aiowrap(logging.debug)
-a_log_error = aiowrap(logging.error)
+watchdog_logger = logging.getLogger('watchdog_logger')
+watchdog_logger.propagate = False
+watchdog_logger.handlers.clear()
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter('[%(created)d] %(message)s'))
+watchdog_logger.addHandler(handler)
 
 
 class InvalidToken(Exception):
     pass
+
+
+class WatchDogStates(Enum):
+    AUTHORIZED = 'authorization done'
+    NEW_MESSAGE = 'new message in chat'
+    SEND_MESSAGE = 'message sent'
+
+    def __str__(self):
+        return str(self.value)
 
 
 def setup_config():
@@ -46,17 +58,18 @@ def setup_config():
 
 
 async def authorise(token, reader, writer, status_updates_queue: asyncio.Queue):
-    await a_log_debug(decode_message(await reader.readline()))
+    logging.debug(decode_message(await reader.readline()))
     writer.write(f"{token}\n".encode())
     response = json.loads(await reader.readline())
     if not response:
-        await a_log_error("Unknown token. Check it, or register new user")
+        logging.error("Unknown token. Check it, or register new user")
         return False
-    await a_log_debug(response)
+    logging.debug(response)
     nickname = response.get('nickname')
     if nickname:
         status_updates_queue.put_nowait(gui.NicknameReceived(response.get('nickname')))
-    await a_log_debug(f"Выполнена авторизация. Пользователь {nickname}.")
+    logging.debug(f"Выполнена авторизация. Пользователь {nickname}.")
+
     return True
 
 
@@ -69,6 +82,7 @@ async def read_msgs(host: str,
                     message_queue: asyncio.Queue,
                     save_message_queue: asyncio.Queue,
                     status_updates_queue: asyncio.Queue,
+                    watchdog_queue: asyncio.Queue,
                     ):
     while True:
         async with open_connection(host, port, status_updates_queue, gui.ReadConnectionStateChanged) as rw:
@@ -80,6 +94,7 @@ async def read_msgs(host: str,
                 row = row.decode('utf8').strip()
                 message_queue.put_nowait(row)
                 save_message_queue.put_nowait(row)
+                watchdog_queue.put_nowait(WatchDogStates.NEW_MESSAGE)
 
         await asyncio.sleep(ATTEMPT_DELAY_SECS)
 
@@ -89,22 +104,31 @@ async def send_msgs(host: str,
                     token: str,
                     sending_queue: asyncio.Queue,
                     status_updates_queue: asyncio.Queue,
+                    watchdog_queue: asyncio.Queue,
                     ):
     async with open_connection(host, port, status_updates_queue, gui.SendingConnectionStateChanged) as rw:
         reader, writer = rw
         if await authorise(token, reader, writer, status_updates_queue):
             auth_response = decode_message(await reader.readline())
-            await a_log_debug(auth_response)
+            logging.debug(auth_response)
+            watchdog_queue.put_nowait(WatchDogStates.AUTHORIZED)
         else:
-            await a_log_error('Problems with authorization. Check your token')
+            logging.error('Problems with authorization. Check your token')
             raise InvalidToken('Problems with authorization. Check your token')
 
         while True:
             message = await sending_queue.get()
             message = ESCAPE_MESSAGE_PATTERN.sub('\n', message)  # remove new lines
             writer.write(f"{message}\n\n".encode())
-            await a_log_debug(message)
-            await a_log_debug(decode_message(await reader.readline()))
+            logging.debug(message)
+            logging.debug(decode_message(await reader.readline()))
+            watchdog_queue.put_nowait(WatchDogStates.SEND_MESSAGE)
+
+
+async def watch_for_connection(wathchdog_queue: asyncio.Queue):
+    while True:
+        state = await wathchdog_queue.get()
+        watchdog_logger.info(WATCHDOG_TEMPLATE.format(msg=str(state).capitalize()))
 
 
 async def save_messages(filepath, queue: asyncio.Queue):
@@ -120,10 +144,6 @@ def load_chat_history(filepath, queue: asyncio.Queue):  # gui blocking risk
             queue.put_nowait(row.strip())
 
 
-async def dummy_message_writer(msg):
-    await asyncio.sleep(0)
-
-
 @contextlib.asynccontextmanager
 async def open_connection(server: str, port: str, status_updates_queue: asyncio.Queue, state_enum):
     attempt = 0
@@ -135,7 +155,7 @@ async def open_connection(server: str, port: str, status_updates_queue: asyncio.
             reader, writer = await asyncio.open_connection(server, port)
             status_updates_queue.put_nowait(state_enum.ESTABLISHED)
             # TODO расширить enum что бы не дублировать сообщения
-            await a_log_debug("Соединение установлено")
+            logging.debug("Соединение установлено")
             connected = True
             yield reader, writer
             break
@@ -146,18 +166,18 @@ async def open_connection(server: str, port: str, status_updates_queue: asyncio.
         except (ConnectionRefusedError, ConnectionResetError):
             if connected:
                 status_updates_queue.put_nowait(state_enum.CLOSED)
-                await a_log_debug("Соединение было разорвано")
+                logging.debug("Соединение было разорвано")
                 break
             if attempt >= ATTEMPTS_BEFORE_DELAY:
-                await a_log_debug(f"Нет соединения. Повторная попытка через {ATTEMPT_DELAY_SECS} сек.")
+                logging.debug(f"Нет соединения. Повторная попытка через {ATTEMPT_DELAY_SECS} сек.")
                 await asyncio.sleep(ATTEMPT_DELAY_SECS)
                 continue
             attempt += 1
-            await a_log_debug(f"Нет соединения. Повторная попытка.")
+            logging.debug(f"Нет соединения. Повторная попытка.")
 
         finally:
             if all((reader, writer)):
                 writer.close()
                 await writer.wait_closed()
             status_updates_queue.put_nowait(state_enum.CLOSED)
-            await a_log_debug("Соединение закрыто")
+            logging.debug("Соединение закрыто")
