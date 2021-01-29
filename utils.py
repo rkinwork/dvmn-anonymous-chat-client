@@ -7,7 +7,10 @@ from enum import Enum
 import asyncio
 import configargparse
 import aiofiles
+import async_timeout
+
 import gui
+
 
 LOG_DTTM_TMPL = '%d-%m-%y %H:%M:%S'
 ATTEMPT_DELAY_SECS = 3
@@ -18,6 +21,7 @@ DEFAULT_SEND_SERVER_PORT = 5050
 DEFAULT_HISTORY_FILE = 'minechat.history'
 ESCAPE_MESSAGE_PATTERN = re.compile('\n+')
 WATCHDOG_TEMPLATE = 'Connection is alive. {msg}'
+WATCHDOG_TIMEOUT_SEC = 1
 
 watchdog_logger = logging.getLogger('watchdog_logger')
 watchdog_logger.propagate = False
@@ -127,8 +131,17 @@ async def send_msgs(host: str,
 
 async def watch_for_connection(wathchdog_queue: asyncio.Queue):
     while True:
-        state = await wathchdog_queue.get()
-        watchdog_logger.info(WATCHDOG_TEMPLATE.format(msg=str(state).capitalize()))
+        try:
+            async with async_timeout.timeout(WATCHDOG_TIMEOUT_SEC) as cm:
+                state = await wathchdog_queue.get()
+                message = WATCHDOG_TEMPLATE.format(msg=str(state).capitalize())
+        except (asyncio.exceptions.TimeoutError, ) as e:
+            if cm.expired:
+                message = f'{WATCHDOG_TIMEOUT_SEC}s timeout is elapsed'
+            else:
+                raise e
+
+        watchdog_logger.info(message)
 
 
 async def save_messages(filepath, queue: asyncio.Queue):
