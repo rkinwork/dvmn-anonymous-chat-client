@@ -8,9 +8,9 @@ import asyncio
 import configargparse
 import aiofiles
 import async_timeout
+from anyio import create_task_group, ExceptionGroup, get_cancelled_exc_class, open_cancel_scope
 
 import gui
-
 
 LOG_DTTM_TMPL = '%d-%m-%y %H:%M:%S'
 ATTEMPT_DELAY_SECS = 3
@@ -81,6 +81,34 @@ def decode_message(message):
     return message.decode('utf-8').strip()
 
 
+def reconnect(func):
+    async def wrapper(*args, **kwargs):
+        while True:
+            try:
+                await func(*args, **kwargs)
+            except ConnectionError as e:
+                watchdog_logger.error(f'Get connection error: {e}')
+                continue
+
+    return wrapper
+
+
+@reconnect
+async def handle_connection(host: str, send_port: str, receive_port: str, token: str,
+                            messages_queue: asyncio.Queue,
+                            save_message_queue: asyncio.Queue,
+                            status_updates_queue: asyncio.Queue,
+                            watchdog_queue: asyncio.Queue,
+                            sending_queue: asyncio.Queue):
+
+    # todo как здесь отлавливать Cancel? или это будет решено позже по задаче, где всё обернём в группы?
+    async with create_task_group() as tg:
+        await tg.spawn(read_msgs, host, receive_port, messages_queue, save_message_queue, status_updates_queue,
+                       watchdog_queue)
+        await tg.spawn(send_msgs, host, send_port, token, sending_queue, status_updates_queue, watchdog_queue)
+        await tg.spawn(watch_for_connection, watchdog_queue)
+
+
 async def read_msgs(host: str,
                     port: str,
                     message_queue: asyncio.Queue,
@@ -135,9 +163,11 @@ async def watch_for_connection(wathchdog_queue: asyncio.Queue):
             async with async_timeout.timeout(WATCHDOG_TIMEOUT_SEC) as cm:
                 state = await wathchdog_queue.get()
                 message = WATCHDOG_TEMPLATE.format(msg=str(state).capitalize())
-        except (asyncio.exceptions.TimeoutError, ) as e:
+        except (asyncio.exceptions.TimeoutError,) as e:
             if cm.expired:
                 message = f'{WATCHDOG_TIMEOUT_SEC}s timeout is elapsed'
+                watchdog_logger.info(message)
+                raise ConnectionError(message)
             else:
                 raise e
 

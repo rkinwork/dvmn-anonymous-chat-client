@@ -2,7 +2,7 @@ import asyncio
 import logging
 
 import gui
-from utils import setup_config, load_chat_history, save_messages, read_msgs, send_msgs, watch_for_connection, InvalidToken
+from utils import setup_config, load_chat_history, save_messages, handle_connection, InvalidToken
 
 
 async def main():
@@ -19,10 +19,16 @@ async def main():
     load_chat_history(conf.filepath, messages_queue)
     coros_to_gather = [gui.draw(messages_queue, sending_queue, status_updates_queue),
                        save_messages(conf.filepath, save_message_queue),
-                       read_msgs(conf.host, conf.lport, messages_queue, save_message_queue, status_updates_queue,
-                                 watchdog_queue),
-                       send_msgs(conf.host, conf.port, conf.token, sending_queue, status_updates_queue, watchdog_queue),
-                       watch_for_connection(watchdog_queue)
+                       handle_connection(host=conf.host,
+                                         send_port=conf.port,
+                                         receive_port=conf.lport,
+                                         token=conf.token,
+                                         messages_queue=messages_queue,
+                                         save_message_queue=save_message_queue,
+                                         status_updates_queue=status_updates_queue,
+                                         watchdog_queue=watchdog_queue,
+                                         sending_queue=sending_queue
+                                         )
                        ]
     tasks_to_gather = [asyncio.create_task(coro) for coro in coros_to_gather]
     try:
