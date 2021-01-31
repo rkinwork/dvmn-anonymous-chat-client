@@ -3,6 +3,7 @@ import json
 import logging
 import re
 from enum import Enum
+import socket
 
 import asyncio
 import configargparse
@@ -21,7 +22,10 @@ DEFAULT_SEND_SERVER_PORT = 5050
 DEFAULT_HISTORY_FILE = 'minechat.history'
 ESCAPE_MESSAGE_PATTERN = re.compile('\n+')
 WATCHDOG_TEMPLATE = 'Connection is alive. {msg}'
+
 WATCHDOG_TIMEOUT_SEC = 1
+WATCHDOG_PING_PONG_FREQ_SEC = 0.8
+WATCHDOG_EMPTY_PING_PONG_MESSAGE = ''
 
 watchdog_logger = logging.getLogger('watchdog_logger')
 watchdog_logger.propagate = False
@@ -39,6 +43,7 @@ class WatchDogStates(Enum):
     AUTHORIZED = 'authorization done'
     NEW_MESSAGE = 'new message in chat'
     SEND_MESSAGE = 'message sent'
+    PING_MESSAGE = 'ping pong message'
 
     def __str__(self):
         return str(self.value)
@@ -83,12 +88,20 @@ def decode_message(message):
 
 def reconnect(func):
     async def wrapper(*args, **kwargs):
+        attempt = 0
         while True:
             try:
                 await func(*args, **kwargs)
             except ConnectionError as e:
                 watchdog_logger.error(f'Get connection error: {e}')
                 continue
+            except (ConnectionRefusedError, ConnectionResetError, socket.gaierror, TimeoutError) as e:
+                if attempt >= ATTEMPTS_BEFORE_DELAY:
+                    watchdog_logger.debug(f"Нет соединения. Повторная попытка через {ATTEMPT_DELAY_SECS} сек.")
+                    await asyncio.sleep(ATTEMPT_DELAY_SECS)
+                    continue
+                attempt += 1
+                watchdog_logger.debug(f"Нет соединения. Повторная попытка.")
 
     return wrapper
 
@@ -100,13 +113,19 @@ async def handle_connection(host: str, send_port: str, receive_port: str, token:
                             status_updates_queue: asyncio.Queue,
                             watchdog_queue: asyncio.Queue,
                             sending_queue: asyncio.Queue):
-
     # todo как здесь отлавливать Cancel? или это будет решено позже по задаче, где всё обернём в группы?
     async with create_task_group() as tg:
         await tg.spawn(read_msgs, host, receive_port, messages_queue, save_message_queue, status_updates_queue,
                        watchdog_queue)
         await tg.spawn(send_msgs, host, send_port, token, sending_queue, status_updates_queue, watchdog_queue)
         await tg.spawn(watch_for_connection, watchdog_queue)
+        await tg.spawn(ping_pong, sending_queue)
+
+
+async def ping_pong(sending_queue: asyncio.Queue):
+    while True:
+        sending_queue.put_nowait(WATCHDOG_EMPTY_PING_PONG_MESSAGE)
+        await asyncio.sleep(WATCHDOG_PING_PONG_FREQ_SEC)
 
 
 async def read_msgs(host: str,
@@ -152,9 +171,15 @@ async def send_msgs(host: str,
             message = await sending_queue.get()
             message = ESCAPE_MESSAGE_PATTERN.sub('\n', message)  # remove new lines
             writer.write(f"{message}\n\n".encode())
-            logging.debug(message)
-            logging.debug(decode_message(await reader.readline()))
-            watchdog_queue.put_nowait(WatchDogStates.SEND_MESSAGE)
+            resp_after_send = await reader.readline()
+            logging.debug(f"Response message: {decode_message(resp_after_send)}")
+            if message:
+                logging.debug(message)
+                wds = WatchDogStates.SEND_MESSAGE
+            else:
+                # todo обернуть сообщения в класс, что бы не подразумевать что пустое это ping
+                wds = WatchDogStates.PING_MESSAGE
+            watchdog_queue.put_nowait(wds)
 
 
 async def watch_for_connection(wathchdog_queue: asyncio.Queue):
@@ -189,38 +214,29 @@ def load_chat_history(filepath, queue: asyncio.Queue):  # gui blocking risk
 
 @contextlib.asynccontextmanager
 async def open_connection(server: str, port: str, status_updates_queue: asyncio.Queue, state_enum):
-    attempt = 0
     connected = False
     reader, writer = None, None
     status_updates_queue.put_nowait(state_enum.INITIATED)
-    while True:
-        try:
-            reader, writer = await asyncio.open_connection(server, port)
-            status_updates_queue.put_nowait(state_enum.ESTABLISHED)
-            # TODO расширить enum что бы не дублировать сообщения
-            logging.debug("Соединение установлено")
-            connected = True
-            yield reader, writer
-            break
+    try:
+        reader, writer = await asyncio.open_connection(server, port)
+        status_updates_queue.put_nowait(state_enum.ESTABLISHED)
+        # TODO расширить enum что бы не дублировать сообщения
+        logging.debug("Соединение установлено")
+        connected = True
+        yield reader, writer
 
-        except asyncio.CancelledError:
-            raise
+    except asyncio.CancelledError:
+        raise
 
-        except (ConnectionRefusedError, ConnectionResetError):
-            if connected:
-                status_updates_queue.put_nowait(state_enum.CLOSED)
-                logging.debug("Соединение было разорвано")
-                break
-            if attempt >= ATTEMPTS_BEFORE_DELAY:
-                logging.debug(f"Нет соединения. Повторная попытка через {ATTEMPT_DELAY_SECS} сек.")
-                await asyncio.sleep(ATTEMPT_DELAY_SECS)
-                continue
-            attempt += 1
-            logging.debug(f"Нет соединения. Повторная попытка.")
-
-        finally:
-            if all((reader, writer)):
-                writer.close()
-                await writer.wait_closed()
+    except (ConnectionRefusedError, ConnectionResetError, socket.gaierror):
+        if connected:
             status_updates_queue.put_nowait(state_enum.CLOSED)
-            logging.debug("Соединение закрыто")
+            logging.debug("Соединение было разорвано")
+        raise
+
+    finally:
+        if all((reader, writer)):
+            writer.close()
+            await writer.wait_closed()
+        status_updates_queue.put_nowait(state_enum.CLOSED)
+        logging.debug("Соединение закрыто")
