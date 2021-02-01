@@ -9,7 +9,7 @@ import asyncio
 import configargparse
 import aiofiles
 import async_timeout
-from anyio import create_task_group, ExceptionGroup, get_cancelled_exc_class, open_cancel_scope
+from anyio import create_task_group, sleep
 
 import gui
 
@@ -98,7 +98,7 @@ def reconnect(func):
             except (ConnectionRefusedError, ConnectionResetError, socket.gaierror, TimeoutError) as e:
                 if attempt >= ATTEMPTS_BEFORE_DELAY:
                     watchdog_logger.debug(f"Нет соединения. Повторная попытка через {ATTEMPT_DELAY_SECS} сек.")
-                    await asyncio.sleep(ATTEMPT_DELAY_SECS)
+                    await sleep(ATTEMPT_DELAY_SECS)
                     continue
                 attempt += 1
                 watchdog_logger.debug(f"Нет соединения. Повторная попытка.")
@@ -113,7 +113,6 @@ async def handle_connection(host: str, send_port: str, receive_port: str, token:
                             status_updates_queue: asyncio.Queue,
                             watchdog_queue: asyncio.Queue,
                             sending_queue: asyncio.Queue):
-    # todo как здесь отлавливать Cancel? или это будет решено позже по задаче, где всё обернём в группы?
     async with create_task_group() as tg:
         await tg.spawn(read_msgs, host, receive_port, messages_queue, save_message_queue, status_updates_queue,
                        watchdog_queue)
@@ -125,7 +124,7 @@ async def handle_connection(host: str, send_port: str, receive_port: str, token:
 async def ping_pong(sending_queue: asyncio.Queue):
     while True:
         sending_queue.put_nowait(WATCHDOG_EMPTY_PING_PONG_MESSAGE)
-        await asyncio.sleep(WATCHDOG_PING_PONG_FREQ_SEC)
+        await sleep(WATCHDOG_PING_PONG_FREQ_SEC)
 
 
 async def read_msgs(host: str,
@@ -147,7 +146,7 @@ async def read_msgs(host: str,
                 save_message_queue.put_nowait(row)
                 watchdog_queue.put_nowait(WatchDogStates.NEW_MESSAGE)
 
-        await asyncio.sleep(ATTEMPT_DELAY_SECS)
+        await sleep(ATTEMPT_DELAY_SECS)
 
 
 async def send_msgs(host: str,
@@ -177,7 +176,7 @@ async def send_msgs(host: str,
                 logging.debug(message)
                 wds = WatchDogStates.SEND_MESSAGE
             else:
-                # todo обернуть сообщения в класс, что бы не подразумевать что пустое это ping
+                # TODO обернуть сообщения в класс, что бы не подразумевать что пустое это ping
                 wds = WatchDogStates.PING_MESSAGE
             watchdog_queue.put_nowait(wds)
 
