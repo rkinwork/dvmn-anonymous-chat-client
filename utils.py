@@ -4,6 +4,7 @@ import logging
 import re
 from enum import Enum
 import socket
+from tkinter import messagebox
 
 import asyncio
 import configargparse
@@ -22,6 +23,7 @@ DEFAULT_SEND_SERVER_PORT = 5050
 DEFAULT_HISTORY_FILE = 'minechat.history'
 ESCAPE_MESSAGE_PATTERN = re.compile('\n+')
 WATCHDOG_TEMPLATE = 'Connection is alive. {msg}'
+CREDENTIALS_FILE_NAME = 'credentials.txt'
 
 WATCHDOG_TIMEOUT_SEC = 1
 WATCHDOG_PING_PONG_FREQ_SEC = 0.8
@@ -61,9 +63,31 @@ def setup_config():
                    env_var='DVMN_CHAT_PATH', default=DEFAULT_HISTORY_FILE)
     group = p.add_mutually_exclusive_group()
     group.add_argument('-t', '--token', help='authorization token', env_var='DVMN_AUTH_TOKEN')
-    group.add_argument('-n', '--nickname', help='name of the new user')
+    group.add_argument('-n', '--register', help='name of the new user', action='store_true')
 
     return p.parse_args()
+
+
+async def register_user(host: str, port: str,
+                        status_updates_queue: asyncio.Queue,
+                        nickname_queue: asyncio.Queue,
+                        register_queue: asyncio.Queue):
+    nick_name = await nickname_queue.get()
+    async with open_connection(host, port, status_updates_queue, gui.SendingConnectionStateChanged) as rw:
+        reader, writer = rw
+        await reader.readline()
+        writer.write("\n".encode())
+        await reader.readline()
+        writer.write((nick_name + "\n").encode())
+        credentials = json.loads(await reader.readline())
+        print(credentials)
+        if not credentials:
+            register_queue.put_nowait(None)
+            return
+
+        with open(CREDENTIALS_FILE_NAME, 'w') as f:
+            f.write(credentials['account_hash'])
+            register_queue.put_nowait(CREDENTIALS_FILE_NAME)
 
 
 async def authorise(token, reader, writer, status_updates_queue: asyncio.Queue):

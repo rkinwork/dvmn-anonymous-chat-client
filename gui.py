@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import messagebox
 from tkinter.scrolledtext import ScrolledText
 from enum import Enum
+import asyncio
 
 from anyio import create_task_group, sleep
 
@@ -136,3 +137,52 @@ async def draw(messages_queue, sending_queue, status_updates_queue):
 
 def show_token_error():
     messagebox.showinfo("Неверный токен", "Проверьте токен, сервер его не узнал.")
+
+
+def register_user(root, input_field, nickname_queue):
+    nick_name = input_field.get()
+    nick_name = nick_name.strip()
+    if len(nick_name) == 0:
+        messagebox.showerror("Ошибка", "Пустой никнейм, по пробуйте ещё раз")
+        root.destroy()
+    nickname_queue.put_nowait(nick_name)
+
+
+async def check_register(root, register_queue: asyncio.Queue):
+    res = await register_queue.get()
+    if not res:
+        messagebox.showerror("Ошибка", "Проблема с регистрацией, по пробуйте ещё раз")
+        root.destroy()
+        return
+
+    messagebox.showinfo("Успех", f"Ваш токен сохранён в файл {res}")
+    root.destroy()
+
+
+async def draw_register(register_queue: asyncio.Queue, nickname_queue: asyncio.Queue):
+    root = tk.Tk()
+
+    root.title('Регистрация пользователя')
+
+    root_frame = tk.Frame()
+    root_frame.pack(fill="both", expand=True)
+
+    input_frame = tk.Frame(root_frame)
+    input_frame.pack(fill=tk.X)
+
+    label = tk.Label(input_frame)
+    label["text"] = "Введите желаемый никнейм"
+    label["height"] = "3"
+    label.pack(side="top", fill=tk.Y)
+
+    input_field = tk.Entry(input_frame)
+    input_field.pack(side="left", fill=tk.X, expand=True)
+
+    send_button = tk.Button(input_frame)
+    send_button["text"] = "Отправить"
+    send_button["command"] = lambda: register_user(root, input_field, nickname_queue)
+    send_button.pack(side="left")
+
+    async with create_task_group() as tg:
+        await tg.spawn(check_register, root, register_queue)
+        await tg.spawn(update_tk, root_frame)

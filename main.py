@@ -4,7 +4,7 @@ import logging
 from anyio import create_task_group, run
 
 import gui
-from utils import setup_config, load_chat_history, save_messages, handle_connection, InvalidToken
+from utils import setup_config, load_chat_history, save_messages, handle_connection, InvalidToken, register_user
 
 
 async def main():
@@ -19,6 +19,20 @@ async def main():
         logging.basicConfig(level=logging.DEBUG)
 
     load_chat_history(conf.filepath, messages_queue)
+    if conf.register:
+        nickname_queue = asyncio.Queue()
+        register_queue = asyncio.Queue()
+        try:
+            async with create_task_group() as tg:
+                await tg.spawn(gui.draw_register, register_queue, nickname_queue)
+                await tg.spawn(register_user, conf.host, conf.port, status_updates_queue, nickname_queue,
+                               register_queue)
+
+        except gui.TkAppClosed:
+            pass
+
+        return
+
     try:
         async with create_task_group() as tg:
             await tg.spawn(gui.draw, messages_queue, sending_queue, status_updates_queue)
