@@ -80,7 +80,6 @@ async def register_user(host: str, port: str,
         await reader.readline()
         writer.write((nick_name + "\n").encode())
         credentials = json.loads(await reader.readline())
-        print(credentials)
         if not credentials:
             register_queue.put_nowait(None)
             return
