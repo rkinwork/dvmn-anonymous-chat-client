@@ -69,7 +69,7 @@ variables or creating `conf.ini` file in the project root
 |Register new user| -n --register| |
 |Switch on debug mode| -d --debug||
 
-##TROUBLESHOOTING 
+## TROUBLESHOOTING 
 
 ### Problems with connection
 Contact with server admins via [Telegram group](tg://resolve?domain=dvmn_flood)
