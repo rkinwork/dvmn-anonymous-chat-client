@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from contextlib import suppress
 
 from anyio import create_task_group, run
 
@@ -22,14 +23,10 @@ async def main():
     if conf.register:
         nickname_queue = asyncio.Queue()
         register_queue = asyncio.Queue()
-        try:
-            async with create_task_group() as tg:
-                await tg.spawn(gui.draw_register, register_queue, nickname_queue)
-                await tg.spawn(register_user, conf.host, conf.port, status_updates_queue, nickname_queue,
-                               register_queue)
-
-        except gui.TkAppClosed:
-            pass
+        async with create_task_group() as tg:
+            await tg.spawn(gui.draw_register, register_queue, nickname_queue)
+            await tg.spawn(register_user, conf.host, conf.port, status_updates_queue, nickname_queue,
+                           register_queue)
 
         return
 
@@ -48,12 +45,8 @@ async def main():
                            sending_queue)
     except InvalidToken:
         gui.show_token_error()
-    except gui.TkAppClosed:
-        pass
 
 
 if __name__ == '__main__':
-    try:
+    with suppress(KeyboardInterrupt, gui.TkAppClosed):
         run(main)
-    except KeyboardInterrupt:
-        pass
