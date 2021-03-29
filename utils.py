@@ -181,13 +181,12 @@ async def send_msgs(host: str,
                     ):
     async with open_connection(host, port, status_updates_queue, gui.SendingConnectionStateChanged) as rw:
         reader, writer = rw
-        if await authorise(token, reader, writer, status_updates_queue):
-            auth_response = decode_message(await reader.readline())
-            logging.debug(auth_response)
-            watchdog_queue.put_nowait(WatchDogStates.AUTHORIZED)
-        else:
+        if not await authorise(token, reader, writer, status_updates_queue):
             logging.error('Problems with authorization. Check your token')
             raise InvalidToken('Problems with authorization. Check your token')
+        auth_response = decode_message(await reader.readline())
+        logging.debug(auth_response)
+        watchdog_queue.put_nowait(WatchDogStates.AUTHORIZED)
 
         while True:
             message = await sending_queue.get()
@@ -195,12 +194,13 @@ async def send_msgs(host: str,
             writer.write(f"{message}\n\n".encode())
             resp_after_send = await reader.readline()
             logging.debug(f"Response message: {decode_message(resp_after_send)}")
+
+            # TODO обернуть сообщения в класс, что бы не подразумевать что пустое это ping
+            wds = WatchDogStates.PING_MESSAGE
             if message:
                 logging.debug(message)
                 wds = WatchDogStates.SEND_MESSAGE
-            else:
-                # TODO обернуть сообщения в класс, что бы не подразумевать что пустое это ping
-                wds = WatchDogStates.PING_MESSAGE
+
             watchdog_queue.put_nowait(wds)
 
 
@@ -211,12 +211,11 @@ async def watch_for_connection(wathchdog_queue: asyncio.Queue):
                 state = await wathchdog_queue.get()
                 message = WATCHDOG_TEMPLATE.format(msg=str(state).capitalize())
         except (asyncio.exceptions.TimeoutError,) as e:
-            if cm.expired:
-                message = f'{WATCHDOG_TIMEOUT_SEC}s timeout is elapsed'
-                watchdog_logger.info(message)
-                raise ConnectionError(message)
-            else:
+            if not cm.expired:
                 raise e
+            message = f'{WATCHDOG_TIMEOUT_SEC}s timeout is elapsed'
+            watchdog_logger.info(message)
+            raise ConnectionError(message)
 
         watchdog_logger.info(message)
 
