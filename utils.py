@@ -4,7 +4,7 @@ import logging
 import re
 from enum import Enum
 import socket
-from tkinter import messagebox
+from typing import Union, Type
 
 import asyncio
 import configargparse
@@ -73,7 +73,8 @@ async def register_user(host: str, port: str,
                         nickname_queue: asyncio.Queue,
                         register_queue: asyncio.Queue):
     nick_name = await nickname_queue.get()
-    async with open_connection(host, port, status_updates_queue, gui.SendingConnectionStateChanged) as rw:
+    open_connection = ConnectionWrapper(OpenConnection, status_updates_queue, gui.SendingConnectionStateChanged)
+    async with open_connection(host, port) as rw:
         reader, writer = rw
         await reader.readline()
         writer.write("\n".encode())
@@ -157,8 +158,9 @@ async def read_msgs(host: str,
                     status_updates_queue: asyncio.Queue,
                     watchdog_queue: asyncio.Queue,
                     ):
+    open_connection = ConnectionWrapper(OpenConnection, status_updates_queue, gui.ReadConnectionStateChanged)
     while True:
-        async with open_connection(host, port, status_updates_queue, gui.ReadConnectionStateChanged) as rw:
+        async with open_connection(host, port) as rw:
             reader, *_ = rw
             while True:
                 row = await reader.readline()
@@ -179,7 +181,8 @@ async def send_msgs(host: str,
                     status_updates_queue: asyncio.Queue,
                     watchdog_queue: asyncio.Queue,
                     ):
-    async with open_connection(host, port, status_updates_queue, gui.SendingConnectionStateChanged) as rw:
+    open_connection = ConnectionWrapper(OpenConnection, status_updates_queue, gui.SendingConnectionStateChanged)
+    async with open_connection(host, port) as rw:
         reader, writer = rw
         if not await authorise(token, reader, writer, status_updates_queue):
             logging.error('Problems with authorization. Check your token')
@@ -233,31 +236,60 @@ def load_chat_history(filepath, queue: asyncio.Queue):  # gui blocking risk
             queue.put_nowait(row.strip())
 
 
-@contextlib.asynccontextmanager
-async def open_connection(server: str, port: str, status_updates_queue: asyncio.Queue, state_enum):
-    connected = False
-    reader, writer = None, None
-    status_updates_queue.put_nowait(state_enum.INITIATED)
-    try:
-        reader, writer = await asyncio.open_connection(server, port)
-        status_updates_queue.put_nowait(state_enum.ESTABLISHED)
-        # TODO расширить enum что бы не дублировать сообщения
+class OpenConnection(contextlib.AbstractAsyncContextManager):
+    _reader, _writer = None, None
+
+    def __init__(self,
+                 server: str,
+                 port: str):
+        self._server: str = server
+        self._port: str = port
+
+    async def __aenter__(self):
+        self._reader, self._writer = await asyncio.open_connection(self._server, self._port)
         logging.debug("Соединение установлено")
-        connected = True
-        yield reader, writer
+        return self._reader, self._writer
 
-    except asyncio.CancelledError:
-        raise
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        logging.debug("Закрываем соединение")
+        if all((self._reader, self._writer)):
+            self._writer.close()
+            await self._writer.wait_closed()
+            logging.debug("Соединение закрыто")
 
-    except (ConnectionRefusedError, ConnectionResetError, socket.gaierror):
-        if connected:
-            status_updates_queue.put_nowait(state_enum.CLOSED)
-            logging.debug("Соединение было разорвано")
-        raise
 
-    finally:
-        if all((reader, writer)):
-            writer.close()
-            await writer.wait_closed()
-        status_updates_queue.put_nowait(state_enum.CLOSED)
-        logging.debug("Соединение закрыто")
+class ConnectionWrapper(contextlib.AbstractAsyncContextManager):
+    _conn_context: OpenConnection = None
+
+    def __init__(self,
+                 conn_context_class: Type[OpenConnection],
+                 status_updates_queue: asyncio.Queue,
+                 state_enum: Union[Type[gui.ReadConnectionStateChanged], Type[gui.SendingConnectionStateChanged]]):
+        self._conn_context_class = conn_context_class
+        self._status_updates_queue = status_updates_queue
+        self._state_enum = state_enum
+
+    async def __aenter__(self):
+        self._set_status_init()
+        reader, writer = await self._conn_context.__aenter__()
+        self._set_status_established()
+        return reader, writer
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        exception_res = await self._conn_context.__aexit__(exc_type, exc_val, exc_tb)
+        self._set_status_closed()
+        return exception_res
+
+    def __call__(self, server: str, port: str):
+        self._conn_context = self._conn_context_class(server, port)
+        return self
+
+    def _set_status_init(self):
+        self._status_updates_queue.put_nowait(self._state_enum.INITIATED)
+
+    def _set_status_established(self):
+        self._status_updates_queue.put_nowait(self._state_enum.ESTABLISHED)
+
+    def _set_status_closed(self):
+        self._status_updates_queue.put_nowait(self._state_enum.CLOSED)
+
