@@ -78,8 +78,10 @@ async def register_user(host: str, port: str,
         reader, writer = rw
         await reader.readline()
         writer.write("\n".encode())
+        await writer.drain()
         await reader.readline()
         writer.write((nick_name + "\n").encode())
+        await writer.drain()
         credentials = json.loads(await reader.readline())
         if not credentials:
             register_queue.put_nowait(None)
@@ -93,6 +95,7 @@ async def register_user(host: str, port: str,
 async def authorise(token, reader, writer, status_updates_queue: asyncio.Queue):
     logging.debug(decode_message(await reader.readline()))
     writer.write(f"{token}\n".encode())
+    await writer.drain()
     response = json.loads(await reader.readline())
     if not response:
         logging.error("Unknown token. Check it, or register new user")
@@ -195,6 +198,7 @@ async def send_msgs(host: str,
             message = await sending_queue.get()
             message = ESCAPE_MESSAGE_PATTERN.sub('\n', message)  # remove new lines
             writer.write(f"{message}\n\n".encode())
+            await writer.drain()
             resp_after_send = await reader.readline()
             logging.debug(f"Response message: {decode_message(resp_after_send)}")
 
