@@ -55,8 +55,11 @@ To see all available setting
 python main.py -h
 ```
 
-For example, you can switch on debug mode, redefine connection setting or set new filepath for history file. All you can do via cli arguments, ENV
-variables or creating `conf.ini` file in the project root
+For example, you can switch on debug mode, redefine connection setting or set new filepath for history file. All manipulations you can do using of 3 ways: 
+
+1. CLI arguments
+0. ENV variables 
+0. Creating `conf.ini` file in the project root
 
 |Action|Option| Env variable|
 |---|---|---|
@@ -75,7 +78,7 @@ variables or creating `conf.ini` file in the project root
 Contact with server admins via [Telegram group](tg://resolve?domain=dvmn_flood)
 
 ### Tkinter on Mac
-There some problems with first launching on MacOS - I this is useful [question](https://stackoverflow.com/questions/42345189/how-to-use-the-tkinter-module-on-macossierra)
+There are some problems with first launching on MacOS - I used this is useful [question](https://stackoverflow.com/questions/42345189/how-to-use-the-tkinter-module-on-macossierra) to solve this
 
 ## Authors
 
